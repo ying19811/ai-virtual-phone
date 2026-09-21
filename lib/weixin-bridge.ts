@@ -32,7 +32,7 @@ type ILinkPollResponse = {
     get_updates_buf?: string;
 };
 
-const BASE_INFO = { channel_version: "1.0.2" };
+const BASE_INFO = { channel_version: "2.4.6" };
 
 type WeixinOutgoing =
     | { kind: "text"; text: string }

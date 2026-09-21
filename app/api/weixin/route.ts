@@ -20,7 +20,7 @@ const WEIXIN_POLL_PAUSED = true;
 
 const ILINK_BASE = "https://ilinkai.weixin.qq.com";
 const CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c";
-const BASE_INFO = { channel_version: "1.0.2" };
+const BASE_INFO = { channel_version: "2.4.6" };
 
 type ProxyRequest = {
     path: string;                        // iLink 路径，如 "/ilink/bot/getupdates"
@@ -158,7 +158,8 @@ function fetchViaProxy(
 function makeIlinkHeaders(botToken?: string): Record<string, string> {
     const headers: Record<string, string> = {
         "Content-Type": "application/json",
-        "iLink-App-ClientVersion": "1",
+        "iLink-App-Id": "bot",
+        "iLink-App-ClientVersion": "132102",
     };
 
     if (botToken) {

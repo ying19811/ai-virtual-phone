@@ -41,7 +41,7 @@ const WEIXIN_SHORTCUT_IMAGE_MARKER = "__FLOAT_WEIXIN_SHORTCUT_IMAGE__";
 const SHORTCUT_VISION_OFF_NOTE = "（系统记录：未配置或未启用图像识别，本轮回传的图片没有交给你；请结合上一条的文字内容回应。）";
 const ILINK_BASE = "https://ilinkai.weixin.qq.com";
 const CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c";
-const BASE_INFO = { channel_version: "1.0.2" };
+const BASE_INFO = { channel_version: "2.4.6" };
 // 锁 TTL 必须远小于「函数被平台掐掉后到下次可重试」的可接受等待：
 // 云函数被墙钟杀掉时 finally 不会执行、锁无法主动释放，只能等 TTL 过期。
 const AUTO_REPLY_LOCK_TTL_MS = 3 * 60 * 1000;
@@ -1904,7 +1904,7 @@ async function callIlinkJson(path, botToken, body, method = "POST") {
 }
 
 function makeIlinkHeaders(botToken) {
-  const headers = { "Content-Type": "application/json", "iLink-App-ClientVersion": "1" };
+  const headers = { "Content-Type": "application/json", "iLink-App-Id": "bot", "iLink-App-ClientVersion": "132102" };
   if (botToken) {
     headers.Authorization = `Bearer ${botToken}`;
     headers.AuthorizationType = "ilink_bot_token";
