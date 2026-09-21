@@ -502,12 +502,19 @@ async function handleWeixinRequest(payload: WeixinRequest) {
         && !(typeof body === "object" && Object.keys(body as object).length === 0);
     const bodyStr = fetchMethod === "POST" && hasBody ? JSON.stringify(body) : undefined;
 
+    // getupdates 是长轮询：没新消息时微信那边一直挂着（海外域名 ilinkai.wechat.com 挂到
+    // 边缘节点超时直接回 524）。Netlify 免费档函数 10 秒就掐，所以这里自己先在 8 秒收手，
+    // 把「等不到」当成「这轮没消息」正常返回，别让浏览器把它数成连续失败然后停掉轮询。
+    const isGetUpdates = path.includes("getupdates");
+    const idleResponse = () => NextResponse.json({ ret: 0, msgs: [] });
+
     try {
         const upstream = await fetchViaProxy(
             url,
             { method: fetchMethod, headers, body: bodyStr },
-            24000,
+            isGetUpdates ? 8000 : 24000,
         );
+        if (isGetUpdates && upstream.status === 524) return idleResponse();
 
         try {
             const data = JSON.parse(upstream.body);
@@ -520,6 +527,8 @@ async function handleWeixinRequest(payload: WeixinRequest) {
         }
     } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
+        const isTimeout = (err instanceof Error && err.name === "TimeoutError") || /timeout/i.test(msg);
+        if (isGetUpdates && isTimeout) return idleResponse();
         console.error(`[weixin-proxy] fetch failed: ${msg}`);
         return NextResponse.json({ error: "upstream_error", message: msg }, { status: 502 });
     }

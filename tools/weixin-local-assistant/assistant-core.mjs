@@ -1897,15 +1897,30 @@ function resolveIlinkBase(botToken) {
   return (botToken && ilinkBaseByToken.get(botToken)) || ILINK_BASE;
 }
 
+// getupdates 是长轮询：没新消息时微信那边一直挂着，海外域名 ilinkai.wechat.com 会挂到
+// 边缘节点超时直接回 524。这两种情况都不是故障，只是「这轮没消息」——按空结果返回，
+// 游标不动，下一轮接着问。其它接口超时仍然当错误抛。
+const ILINK_GETUPDATES_TIMEOUT_MS = 20_000;
+const ILINK_DEFAULT_TIMEOUT_MS = 30_000;
+
 async function callIlinkJson(path, botToken, body, method = "POST") {
   if (!path || typeof path !== "string") throw new Error("missing_ilink_path");
   const fetchMethod = method === "GET" ? "GET" : "POST";
-  const res = await fetch(`${resolveIlinkBase(botToken)}${path}`, {
-    method: fetchMethod,
-    headers: makeIlinkHeaders(botToken),
-    body: fetchMethod === "POST" ? JSON.stringify(body ?? {}) : undefined,
-  });
+  const isGetUpdates = path.includes("getupdates");
+  let res;
+  try {
+    res = await fetch(`${resolveIlinkBase(botToken)}${path}`, {
+      method: fetchMethod,
+      headers: makeIlinkHeaders(botToken),
+      body: fetchMethod === "POST" ? JSON.stringify(body ?? {}) : undefined,
+      signal: AbortSignal.timeout(isGetUpdates ? ILINK_GETUPDATES_TIMEOUT_MS : ILINK_DEFAULT_TIMEOUT_MS),
+    });
+  } catch (err) {
+    if (isGetUpdates && err?.name === "TimeoutError") return { ret: 0, msgs: [] };
+    throw err;
+  }
   const text = await res.text();
+  if (isGetUpdates && res.status === 524) return { ret: 0, msgs: [] };
   if (!res.ok) throw new Error(`iLink HTTP ${res.status}: ${text.slice(0, 300)}`);
   try {
     return JSON.parse(text);
