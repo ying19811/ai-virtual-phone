@@ -8,7 +8,7 @@
 // Token 与取回的 key 经站点代理透传，不存储不记录。
 
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
-import { Check, CloudUpload, ExternalLink, Loader2, MessageSquare, Satellite } from "lucide-react";
+import { Check, CloudUpload, ExternalLink, Loader2, MessageSquare, RefreshCcw, Satellite } from "lucide-react";
 import {
     isCloudBackupConfigured,
     loadCloudBackupConfig,
@@ -23,9 +23,9 @@ import {
     probeWeixinCloudDeployed,
     syncAllWeixinBotRuntimesToCloud,
 } from "@/lib/weixin-cloud-sync";
-import { connectPersonalPushCloud, deployPersonalPushCloud, isPersonalPushCloudActive } from "@/lib/personal-push-cloud";
+import { connectPersonalPushCloud, deployPersonalPushCloud, disablePersonalPushCloud, isPersonalPushCloudActive } from "@/lib/personal-push-cloud";
 import { ensurePersonalPushSubscription, getOfflinePushState, markAccountPushSubscribed } from "@/lib/push-client";
-import { getWeixinCloudDeployedAt, markWeixinCloudDeployed, savePushCloudScheduled, saveWeixinCloudScheduled } from "@/lib/cloud-deploy-status";
+import { clearCloudDeployStatus, getWeixinCloudDeployedAt, markWeixinCloudDeployed, savePushCloudScheduled, saveWeixinCloudScheduled } from "@/lib/cloud-deploy-status";
 import { Input, Select } from "@/components/ui/form";
 
 const SUPABASE_TOKENS_URL = "https://supabase.com/dashboard/account/tokens";
@@ -56,6 +56,12 @@ function projectRefFromUrl(value: string): string {
     } catch {
         return "";
     }
+}
+
+/** 本机是否绑着某个 Supabase 项目：创建到一半中断（有地址/标记但还没取到 key）也算，才能靠「更换」跳出来。 */
+function hasPersonalCloudBinding(): boolean {
+    const config = loadCloudBackupConfig();
+    return Boolean(normalizeBackupUrl(config.url) || config.key.trim() || config.managedProjectRef);
 }
 
 function wait(ms: number): Promise<void> {
@@ -150,11 +156,15 @@ export function CloudServicesSetup({ onConfigChanged }: { onConfigChanged?: () =
     const [connectOpen, setConnectOpen] = useState(false);
     const [connectUrl, setConnectUrl] = useState("");
     const [connectKey, setConnectKey] = useState("");
+    // 更换 Supabase 项目：只解除本机绑定，云端一概不动
+    const [hasBinding, setHasBinding] = useState(false);
+    const [switchOpen, setSwitchOpen] = useState(false);
 
     useEffect(() => {
         setCloudReady(isCloudBackupConfigured(loadCloudBackupConfig()));
         setPushActive(isPersonalPushCloudActive());
         setWeixinDeployed(Boolean(getWeixinCloudDeployedAt()));
+        setHasBinding(hasPersonalCloudBinding());
     }, []);
 
     const configuredUrl = normalizeBackupUrl(loadCloudBackupConfig().url);
@@ -163,6 +173,7 @@ export function CloudServicesSetup({ onConfigChanged }: { onConfigChanged?: () =
         setCloudReady(isCloudBackupConfigured(loadCloudBackupConfig()));
         setPushActive(isPersonalPushCloudActive());
         setWeixinDeployed(Boolean(getWeixinCloudDeployedAt()));
+        setHasBinding(hasPersonalCloudBinding());
         onConfigChanged?.();
     };
 
@@ -426,6 +437,46 @@ export function CloudServicesSetup({ onConfigChanged }: { onConfigChanged?: () =
         }
     };
 
+    /**
+     * 更换 Supabase 项目：只让这台设备忘掉当前个人云——抹掉本机的地址/密钥/专用项目标记
+     * 和各项部署状态。不调用任何 Supabase 删除接口，旧项目、数据库、Storage、函数原样保留。
+     * 清完后 openScopeDialog 里 managedProjectRef 对不上任何地址，下一枚 Token 必然走新建流程。
+     */
+    const runSwitchProject = () => {
+        if (busy) return;
+        // ① 云备份配置：清地址/密钥/专用项目标记并关掉自动备份；间隔、保留数等偏好保留
+        saveCloudBackupConfig({
+            ...loadCloudBackupConfig(),
+            url: "",
+            key: "",
+            enabled: false,
+            managedProjectRef: undefined,
+            managedOrganizationSlug: undefined,
+        });
+        // ② 离线推送：忘掉旧项目的部署记录，并关上订阅门控，兜底请求不会再发往已解绑的项目
+        disablePersonalPushCloud();
+        markAccountPushSubscribed(false);
+        // ③ 微信接入 / 定时任务的本机标记
+        clearCloudDeployStatus();
+        // ④ 页面状态归零：下次粘贴 Token 重新拉组织列表、重新选组织、新建项目
+        setSelectedRef("");
+        setSelectedOrganizationSlug("");
+        setOrganizations([]);
+        setToken("");
+        setConnectUrl("");
+        setConnectKey("");
+        setSwitchOpen(false);
+        setResultDialog({
+            title: "已解除当前个人云",
+            text: [
+                "这台设备已经忘记旧 Supabase 项目。",
+                "旧项目、云端数据和函数都没有被删除。",
+                "现在可以粘贴新的 Access Token，重新选择组织并创建新的 Personal Cloud。",
+            ].join("\n"),
+        });
+        refreshStatus();
+    };
+
     const scopeRow = (
         label: string,
         checked: boolean,
@@ -500,14 +551,28 @@ export function CloudServicesSetup({ onConfigChanged }: { onConfigChanged?: () =
             </div>
 
             {/* 换设备重连：云端服务还活着，只是本机丢了连接标记——不需要重新部署 */}
-            <button
-                type="button"
-                className="self-center text-[calc(12px*var(--app-text-scale,1))] font-semibold text-gray-500 underline underline-offset-2 hover:text-gray-700 disabled:opacity-40"
-                onClick={openConnectDialog}
-                disabled={Boolean(busy)}
-            >
-                已经部署过？换了设备只需重新连接 →
-            </button>
+            <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1">
+                <button
+                    type="button"
+                    className="text-[calc(12px*var(--app-text-scale,1))] font-semibold text-gray-500 underline underline-offset-2 hover:text-gray-700 disabled:opacity-40"
+                    onClick={openConnectDialog}
+                    disabled={Boolean(busy)}
+                >
+                    已经部署过？换了设备只需重新连接 →
+                </button>
+                {/* 更换项目：只在本机还绑着某个项目时出现；点了先确认，只解本机绑定 */}
+                {hasBinding && (
+                    <button
+                        type="button"
+                        className="inline-flex items-center gap-1 text-[calc(12px*var(--app-text-scale,1))] font-semibold text-gray-500 underline underline-offset-2 hover:text-gray-700 disabled:opacity-40"
+                        onClick={() => { if (!busy) setSwitchOpen(true); }}
+                        disabled={Boolean(busy)}
+                    >
+                        <RefreshCcw size={12} strokeWidth={2} />
+                        更换 Supabase 项目
+                    </button>
+                )}
+            </div>
 
             {/* 三项状态 */}
             <div className="flex flex-col gap-2">
@@ -533,6 +598,41 @@ export function CloudServicesSetup({ onConfigChanged }: { onConfigChanged?: () =
                         <div className="modal-footer">
                             <button type="button" className="ui-btn ui-btn-primary" onClick={() => setResultDialog(null)}>
                                 知道了
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* 更换 Supabase 项目确认弹窗 */}
+            {switchOpen && (
+                <div className="modal-overlay" data-ui="modal" onClick={() => setSwitchOpen(false)}>
+                    <div
+                        className="modal-dialog"
+                        role="alertdialog"
+                        aria-modal="true"
+                        aria-label="更换 Supabase 项目"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="modal-body flex flex-col gap-3">
+                            <h3 className="modal-title">更换 Supabase 项目</h3>
+                            <div className="menu-desc !mt-0 rounded-[14px] bg-black/[0.03] px-3 py-2.5">
+                                这里只解除这台设备与当前个人云的绑定。不会删除旧 Supabase 项目、数据库、Storage、
+                                Edge Functions 或云端数据。解除后，可以重新粘贴 Access Token，重新选择
+                                Organization，并创建新的 Personal Cloud。
+                            </div>
+                            {configuredUrl && (
+                                <p className="menu-desc !mt-0 min-w-0 truncate">
+                                    当前绑定：{configuredUrl.replace(/^https?:\/\//, "")}
+                                </p>
+                            )}
+                        </div>
+                        <div className="modal-footer">
+                            <button type="button" className="ui-btn ui-btn-outline" onClick={() => setSwitchOpen(false)}>
+                                取消
+                            </button>
+                            <button type="button" className="ui-btn ui-btn-primary" onClick={runSwitchProject} disabled={Boolean(busy)}>
+                                解除并更换
                             </button>
                         </div>
                     </div>

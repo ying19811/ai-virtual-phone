@@ -3,7 +3,7 @@
 // 微信云函数没有可靠的远端探测接口，以「中央流程部署成功时打标 + 云端
 // 心跳」双信号判断；轮询开关同理记录最后一次成功设置的状态。
 
-import { kvGet, kvSet } from "./kv-db";
+import { kvGet, kvRemove, kvSet } from "./kv-db";
 
 const WEIXIN_DEPLOYED_KEY = "ai_phone_weixin_cloud_deployed_v1";
 const WEIXIN_SCHEDULED_KEY = "ai_phone_weixin_cloud_scheduled_v1";
@@ -33,4 +33,11 @@ export function savePushCloudScheduled(on: boolean): void {
 /** 部署脚本默认就带定时任务，所以缺省视为开。 */
 export function loadPushCloudScheduled(): boolean {
     return kvGet(PUSH_SCHEDULED_KEY) !== "0";
+}
+
+/** 更换 Supabase 项目时一并忘掉旧项目的部署/定时标记。只清本机，不碰云端。 */
+export function clearCloudDeployStatus(): void {
+    kvRemove(WEIXIN_DEPLOYED_KEY);
+    kvRemove(WEIXIN_SCHEDULED_KEY);
+    kvRemove(PUSH_SCHEDULED_KEY);
 }
