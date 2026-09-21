@@ -7,6 +7,7 @@ import { createCipheriv, createHash, randomBytes, randomUUID } from "node:crypto
 import http from "node:http";
 import https from "node:https";
 import tls from "node:tls";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 export const runtime = "nodejs";
 
@@ -19,19 +20,40 @@ export const maxDuration = 25;
 const WEIXIN_POLL_PAUSED = false;
 
 const ILINK_BASE = "https://ilinkai.weixin.qq.com";
+// 海外微信号（WeChat）扫码时服务端返回 scaned_but_redirect + redirect_host=ilinkai.wechat.com，
+// 之后该 Bot 的所有请求都必须打到重定向后的域名。浏览器把 Bot 的 baseUrl 随请求带上，
+// 这里只认白名单里的两个域名，其它一律回落默认域名（防止代理被拿去打别的地址）。
+const ILINK_ALLOWED_HOSTS = new Set(["ilinkai.weixin.qq.com", "ilinkai.wechat.com"]);
+const ilinkBaseStore = new AsyncLocalStorage<string>();
 const CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c";
 const BASE_INFO = { channel_version: "2.4.6" };
+
+function resolveIlinkBase(value: unknown): string {
+    if (typeof value !== "string" || !value.trim()) return ILINK_BASE;
+    try {
+        const url = new URL(value.includes("://") ? value.trim() : `https://${value.trim()}`);
+        return ILINK_ALLOWED_HOSTS.has(url.hostname) ? `https://${url.hostname}` : ILINK_BASE;
+    } catch {
+        return ILINK_BASE;
+    }
+}
+
+function currentIlinkBase(): string {
+    return ilinkBaseStore.getStore() ?? ILINK_BASE;
+}
 
 type ProxyRequest = {
     path: string;                        // iLink 路径，如 "/ilink/bot/getupdates"
     method?: "GET" | "POST";
     botToken?: string;                   // Bearer token（登录接口不需要）
+    baseUrl?: string;                    // 该 Bot 的 iLink 域名（海外号为 ilinkai.wechat.com），空 = 默认
     body?: unknown;                      // 转发给 iLink 的请求体
 };
 
 type SendImageRequest = {
     action: "send_image";
     botToken: string;
+    baseUrl?: string;
     toUserId: string;
     contextToken: string;
     imageDataUrl: string;
@@ -40,6 +62,7 @@ type SendImageRequest = {
 type SendVoiceRequest = {
     action: "send_voice";
     botToken: string;
+    baseUrl?: string;
     toUserId: string;
     contextToken: string;
     audioDataUrl: string;
@@ -50,6 +73,7 @@ type SendVoiceRequest = {
 type SendFileRequest = {
     action: "send_file";
     botToken: string;
+    baseUrl?: string;
     toUserId: string;
     contextToken: string;
     fileDataUrl: string;
@@ -174,7 +198,7 @@ function makeIlinkHeaders(botToken?: string): Record<string, string> {
 
 async function callIlinkJson<T>(path: string, botToken: string | undefined, body: unknown, timeoutMs = 24000): Promise<T> {
     const upstream = await fetchViaProxy(
-        `${ILINK_BASE}${path}`,
+        `${currentIlinkBase()}${path}`,
         {
             method: "POST",
             headers: makeIlinkHeaders(botToken),
@@ -419,6 +443,11 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: "invalid_json" }, { status: 400 });
     }
 
+    // 这一请求里所有 iLink 调用（含图片/语音/文件上传的多步）都走同一个域名。
+    return ilinkBaseStore.run(resolveIlinkBase(payload.baseUrl), () => handleWeixinRequest(payload));
+}
+
+async function handleWeixinRequest(payload: WeixinRequest) {
     // ⏸ 暂停长轮询：getupdates 秒回 503，不再挂起占用函数时长。
     if (
         WEIXIN_POLL_PAUSED &&
@@ -467,7 +496,7 @@ export async function POST(request: Request) {
 
     const headers = makeIlinkHeaders(botToken);
 
-    const url = `${ILINK_BASE}${path}`;
+    const url = `${currentIlinkBase()}${path}`;
     const fetchMethod = method === "GET" ? "GET" : "POST";
     const hasBody = body !== undefined && body !== null
         && !(typeof body === "object" && Object.keys(body as object).length === 0);

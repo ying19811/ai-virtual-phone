@@ -8,6 +8,7 @@ export type WeixinBotConfig = {
     id: string;           // 唯一ID
     characterId: string;  // 绑定的角色ID
     botToken: string;     // iLink bot_token（格式：wc_live_xxx）
+    baseUrl?: string;     // iLink 域名（海外微信号扫码后被重定向到 ilinkai.wechat.com；空 = 默认国内域名）
     enabled: boolean;     // 是否启用
     nickname?: string;    // 显示名（默认用角色名）
     addedAt: string;      // ISO 日期

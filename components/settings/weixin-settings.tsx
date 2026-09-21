@@ -242,12 +242,21 @@ export function WeixinSettings({ onOpenCloudServices }: { onOpenCloudServices?: 
             const ctrl = new AbortController();
             qrAbort.current = ctrl;
 
+            // 海外微信号扫码后服务端会回 scaned_but_redirect，之后要换到 redirect_host 继续轮询，
+            // 登录成功后这个域名要跟着 Bot 存下来，收发消息都得走它。
+            let pollBaseUrl: string | undefined;
+
             while (!ctrl.signal.aborted) {
                 await new Promise(r => setTimeout(r, 2000));
                 if (ctrl.signal.aborted) break;
 
                 try {
-                    const status = await pollQrCodeStatus(qr.qrcode);
+                    const status = await pollQrCodeStatus(qr.qrcode, pollBaseUrl);
+                    if (status.status === "scaned_but_redirect") {
+                        if (status.redirect_host) pollBaseUrl = status.redirect_host;
+                        setQrStatus("scaned");
+                        continue;
+                    }
                     setQrStatus(status.status);
 
                     if (status.status === "confirmed" && status.bot_token) {
@@ -256,6 +265,7 @@ export function WeixinSettings({ onOpenCloudServices }: { onOpenCloudServices?: 
                         addExclusiveWeixinBot({
                             characterId: newCharacterId,
                             botToken: status.bot_token,
+                            baseUrl: status.baseurl || pollBaseUrl,
                             enabled: true,
                             nickname: char?.name,
                         });

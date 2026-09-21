@@ -810,11 +810,12 @@ async function ilinkCall<T = unknown>(
     body?: unknown,
     botToken?: string,
     signal?: AbortSignal,
+    baseUrl?: string,
 ): Promise<T> {
     const res = await fetch("/api/weixin", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path, method: "POST", botToken, body: body ?? {} }),
+        body: JSON.stringify({ path, method: "POST", botToken, baseUrl, body: body ?? {} }),
         signal,
     });
     if (!res.ok) {
@@ -825,7 +826,7 @@ async function ilinkCall<T = unknown>(
 }
 
 // ── QR 码登录 ─────────────────────────────────────────────────
-export type QrLoginStatus = "wait" | "scaned" | "confirmed" | "expired";
+export type QrLoginStatus = "wait" | "scaned" | "scaned_but_redirect" | "confirmed" | "expired";
 
 type QrCodeResponse = {
     qrcode: string;                  // 轮询用的 ID
@@ -836,6 +837,8 @@ type QrStatusResponse = {
     status: QrLoginStatus;
     bot_token?: string;
     ilink_bot_id?: string;
+    redirect_host?: string;   // status=scaned_but_redirect 时：后续轮询要换到的域名（海外微信号）
+    baseurl?: string;         // confirmed 时服务端指定的该 Bot 域名
 };
 
 /** 获取登录二维码 */
@@ -848,11 +851,13 @@ export async function getLoginQrCode(): Promise<QrCodeResponse> {
 }
 
 /** 轮询扫码状态 */
-export async function pollQrCodeStatus(qrcode: string): Promise<QrStatusResponse> {
+export async function pollQrCodeStatus(qrcode: string, baseUrl?: string): Promise<QrStatusResponse> {
     return ilinkCall<QrStatusResponse>(
         `/ilink/bot/get_qrcode_status?qrcode=${encodeURIComponent(qrcode)}`,
         undefined,
         undefined,
+        undefined,
+        baseUrl,
     );
 }
 
@@ -884,6 +889,8 @@ async function handleIncomingMessage(
             "/ilink/bot/getconfig",
             { ilink_user_id: msg.from_user_id, context_token: msg.context_token, base_info: BASE_INFO },
             bot.botToken,
+            undefined,
+            bot.baseUrl,
         );
         typingTicket = cfg.typing_ticket;
     } catch { /* ignore */ }
@@ -893,6 +900,8 @@ async function handleIncomingMessage(
             "/ilink/bot/sendtyping",
             { ilink_user_id: msg.from_user_id, typing_ticket: typingTicket, status: 1, base_info: BASE_INFO },
             bot.botToken,
+            undefined,
+            bot.baseUrl,
         ).catch(() => {});
         sendTyping();
         typingTimer = setInterval(sendTyping, 5000);
@@ -936,6 +945,8 @@ async function handleIncomingMessage(
             ilinkCall("/ilink/bot/sendtyping",
                 { ilink_user_id: msg.from_user_id, typing_ticket: typingTicket, status: 2, base_info: BASE_INFO },
                 bot.botToken,
+                undefined,
+                bot.baseUrl,
             ).catch(() => {});
         }
         window.dispatchEvent(new CustomEvent("weixin-generating", { detail: { sessionId: session.id, generating: false } }));
@@ -1020,6 +1031,7 @@ async function handleIncomingMessage(
                     body: JSON.stringify({
                         action: "send_image",
                         botToken: bot.botToken,
+                        baseUrl: bot.baseUrl,
                         toUserId: msg.from_user_id,
                         contextToken: msg.context_token,
                         imageDataUrl: item.imageDataUrl,
@@ -1038,6 +1050,7 @@ async function handleIncomingMessage(
                     body: JSON.stringify({
                         action: "send_voice",
                         botToken: bot.botToken,
+                        baseUrl: bot.baseUrl,
                         toUserId: msg.from_user_id,
                         contextToken: msg.context_token,
                         audioDataUrl: item.audioDataUrl,
@@ -1055,6 +1068,7 @@ async function handleIncomingMessage(
                             body: JSON.stringify({
                                 action: "send_image",
                                 botToken: bot.botToken,
+                                baseUrl: bot.baseUrl,
                                 toUserId: msg.from_user_id,
                                 contextToken: msg.context_token,
                                 imageDataUrl: item.fallbackImageDataUrl,
@@ -1076,6 +1090,7 @@ async function handleIncomingMessage(
                     path: "/ilink/bot/sendmessage",
                     method: "POST",
                     botToken: bot.botToken,
+                    baseUrl: bot.baseUrl,
                     body: {
                         msg: {
                             from_user_id: "",
@@ -1127,6 +1142,7 @@ async function handleIncomingMessage(
                     body: JSON.stringify({
                         action: "send_image",
                         botToken: bot.botToken,
+                        baseUrl: bot.baseUrl,
                         toUserId: msg.from_user_id,
                         contextToken: msg.context_token,
                         imageDataUrl: dataUrl,
@@ -1140,6 +1156,7 @@ async function handleIncomingMessage(
                     body: JSON.stringify({
                         action: "send_voice",
                         botToken: bot.botToken,
+                        baseUrl: bot.baseUrl,
                         toUserId: msg.from_user_id,
                         contextToken: msg.context_token,
                         audioDataUrl: dataUrl,
@@ -1156,6 +1173,7 @@ async function handleIncomingMessage(
                     body: JSON.stringify({
                         action: "send_file",
                         botToken: bot.botToken,
+                        baseUrl: bot.baseUrl,
                         toUserId: msg.from_user_id,
                         contextToken: msg.context_token,
                         fileDataUrl: dataUrl,
@@ -1204,6 +1222,7 @@ export async function runBotLoop(
                 { get_updates_buf: updatesBuf, base_info: BASE_INFO },
                 bot.botToken,
                 signal,
+                bot.baseUrl,
             );
 
             if (signal.aborted) break;

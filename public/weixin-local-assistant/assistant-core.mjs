@@ -23,8 +23,12 @@ const WEIXIN_SHORTCUT_IMAGE_MARKER = "__FLOAT_WEIXIN_SHORTCUT_IMAGE__";
 // 既不知道图回没回来，也不知道自己为什么看不见。
 const SHORTCUT_VISION_OFF_NOTE = "（系统记录：未配置或未启用图像识别，本轮回传的图片没有交给你；请结合上一条的文字内容回应。）";
 const ILINK_BASE = "https://ilinkai.weixin.qq.com";
+// 海外微信号（WeChat）扫码时服务端会把会话重定向到 ilinkai.wechat.com，
+// 之后该 Bot 的所有请求都必须打到重定向后的域名。域名随 Bot 配置（baseUrl）下发。
+const ILINK_ALLOWED_HOSTS = new Set(["ilinkai.weixin.qq.com", "ilinkai.wechat.com"]);
+const ilinkBaseByToken = new Map();
 const CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c";
-const BASE_INFO = { channel_version: "1.0.2" };
+const BASE_INFO = { channel_version: "2.4.6" };
 // 锁 TTL 必须远小于「函数被平台掐掉后到下次可重试」的可接受等待：
 // 云函数被墙钟杀掉时 finally 不会执行、锁无法主动释放，只能等 TTL 过期。
 const AUTO_REPLY_LOCK_TTL_MS = 3 * 60 * 1000;
@@ -67,6 +71,7 @@ export async function pollOnce(env, targetBotId, options = {}) {
       continue;
     }
     const runtime = await loadRuntimePackage(env, item);
+    registerIlinkBase(runtime.bot);
     const state = await loadBotState(env, item.botId);
     const polledAt = new Date().toISOString();
 
@@ -1869,10 +1874,33 @@ async function uploadImageToCdn(botToken, toUserId, image) {
   return uploadMediaToCdn(botToken, toUserId, image, 1, { noNeedThumb: true });
 }
 
+function normalizeIlinkBase(value) {
+  if (typeof value !== "string" || !value.trim()) return "";
+  try {
+    const url = new URL(value.includes("://") ? value.trim() : `https://${value.trim()}`);
+    return ILINK_ALLOWED_HOSTS.has(url.hostname) ? `https://${url.hostname}` : "";
+  } catch {
+    return "";
+  }
+}
+
+// 运行包加载后登记该 Bot 的 iLink 域名；之后凡拿这个 token 发请求都自动走对的域名。
+function registerIlinkBase(bot) {
+  const token = bot?.botToken;
+  if (!token) return;
+  const base = normalizeIlinkBase(bot.baseUrl);
+  if (base) ilinkBaseByToken.set(token, base);
+  else ilinkBaseByToken.delete(token);
+}
+
+function resolveIlinkBase(botToken) {
+  return (botToken && ilinkBaseByToken.get(botToken)) || ILINK_BASE;
+}
+
 async function callIlinkJson(path, botToken, body, method = "POST") {
   if (!path || typeof path !== "string") throw new Error("missing_ilink_path");
   const fetchMethod = method === "GET" ? "GET" : "POST";
-  const res = await fetch(`${ILINK_BASE}${path}`, {
+  const res = await fetch(`${resolveIlinkBase(botToken)}${path}`, {
     method: fetchMethod,
     headers: makeIlinkHeaders(botToken),
     body: fetchMethod === "POST" ? JSON.stringify(body ?? {}) : undefined,
@@ -1887,7 +1915,7 @@ async function callIlinkJson(path, botToken, body, method = "POST") {
 }
 
 function makeIlinkHeaders(botToken) {
-  const headers = { "Content-Type": "application/json", "iLink-App-ClientVersion": "1" };
+  const headers = { "Content-Type": "application/json", "iLink-App-Id": "bot", "iLink-App-ClientVersion": "132102" };
   if (botToken) {
     headers.Authorization = `Bearer ${botToken}`;
     headers.AuthorizationType = "ilink_bot_token";
@@ -1931,6 +1959,7 @@ export async function sendProactiveText(env, botId, text, replyAnchor) {
   const item = index.packages.find(entry => entry.botId === botId);
   if (!item) throw new Error("bot_not_found: 云端没有该微信的运行包，请在小手机同步一次");
   const runtime = await loadRuntimePackage(env, item);
+  registerIlinkBase(runtime.bot);
   const botToken = runtime.bot?.botToken;
   if (!botToken) throw new Error("missing_bot_token");
   const rows = await loadCloudMessagesForBot(env, botId, 60);
